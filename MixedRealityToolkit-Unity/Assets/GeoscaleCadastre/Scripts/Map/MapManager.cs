@@ -437,50 +437,120 @@ namespace GeoscaleCadastre.Map
         {
             worldPos = Vector3.zero;
 
+            Debug.Log(string.Format("[MapManager.TryGeoToWorldPosition] Entrée: lat={0:F6}, lng={1:F6}", latitude, longitude));
+            Debug.Log(string.Format("[MapManager.TryGeoToWorldPosition] _mapboxMap est null? {0}", _mapboxMap == null));
+
             if (_mapboxMap == null)
             {
-                Debug.LogWarning("[MapManager] AbstractMap non assigné, conversion impossible");
+                Debug.LogError("[MapManager.TryGeoToWorldPosition] ERREUR: _mapboxMap (AbstractMap) est NULL! Assignez-le dans l'Inspector.");
                 return false;
             }
+
+            Debug.Log(string.Format("[MapManager.TryGeoToWorldPosition] _mapboxMap OK: type={0}, name={1}",
+                _mapboxMap.GetType().Name, _mapboxMap.name));
 
             try
             {
                 var mapType = _mapboxMap.GetType();
-                var vector2dType = Type.GetType("Mapbox.Utils.Vector2d, Mapbox.Unity");
+
+                // Chercher Vector2d dans l'assembly de la map ou dans tous les assemblies chargés
+                Type vector2dType = null;
+
+                // Méthode 1: Chercher dans l'assembly de AbstractMap
+                var mapAssembly = mapType.Assembly;
+                vector2dType = mapAssembly.GetType("Mapbox.Utils.Vector2d");
+
+                // Méthode 2: Si pas trouvé, chercher dans tous les assemblies
+                if (vector2dType == null)
+                {
+                    foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+                    {
+                        vector2dType = assembly.GetType("Mapbox.Utils.Vector2d");
+                        if (vector2dType != null)
+                        {
+                            Debug.Log(string.Format("[MapManager.TryGeoToWorldPosition] Vector2d trouvé dans assembly: {0}", assembly.GetName().Name));
+                            break;
+                        }
+                    }
+                }
 
                 if (vector2dType == null)
                 {
-                    Debug.LogWarning("[MapManager] Type Vector2d non trouvé");
+                    Debug.LogError("[MapManager.TryGeoToWorldPosition] ERREUR: Type Mapbox.Utils.Vector2d non trouvé dans aucun assembly!");
+                    Debug.Log("[MapManager.TryGeoToWorldPosition] Assemblies disponibles:");
+                    foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+                    {
+                        if (assembly.GetName().Name.ToLower().Contains("mapbox"))
+                        {
+                            Debug.Log(string.Format("  - {0}", assembly.GetName().Name));
+                        }
+                    }
                     return false;
                 }
 
+                Debug.Log(string.Format("[MapManager.TryGeoToWorldPosition] Vector2d type trouvé: {0}", vector2dType.FullName));
+
                 // Créer le Vector2d avec lat/lng
                 var latLng = Activator.CreateInstance(vector2dType, latitude, longitude);
+                Debug.Log(string.Format("[MapManager.TryGeoToWorldPosition] Vector2d créé: {0}", latLng));
 
                 // Chercher la méthode GeoToWorldPosition(Vector2d, bool)
                 var geoToWorldMethod = mapType.GetMethod("GeoToWorldPosition",
                     new Type[] { vector2dType, typeof(bool) });
 
-                if (geoToWorldMethod != null)
+                if (geoToWorldMethod == null)
                 {
-                    var result = geoToWorldMethod.Invoke(_mapboxMap, new object[] { latLng, false });
+                    // Essayer sans le paramètre bool
+                    geoToWorldMethod = mapType.GetMethod("GeoToWorldPosition",
+                        new Type[] { vector2dType });
 
-                    if (result is Vector3)
+                    if (geoToWorldMethod != null)
                     {
-                        worldPos = (Vector3)result;
-
-                        Debug.Log(string.Format("[MapManager] Conversion Mapbox: GPS({0:F6}, {1:F6}) -> world({2})",
-                            latitude, longitude, worldPos));
-
-                        return true;
+                        Debug.Log("[MapManager.TryGeoToWorldPosition] Méthode GeoToWorldPosition(Vector2d) trouvée (sans bool)");
+                        var result = geoToWorldMethod.Invoke(_mapboxMap, new object[] { latLng });
+                        if (result is Vector3)
+                        {
+                            worldPos = (Vector3)result;
+                            Debug.Log(string.Format("[MapManager.TryGeoToWorldPosition] SUCCÈS: GPS({0:F6}, {1:F6}) -> world({2})",
+                                latitude, longitude, worldPos));
+                            return true;
+                        }
                     }
+
+                    Debug.LogError("[MapManager.TryGeoToWorldPosition] ERREUR: Méthode GeoToWorldPosition non trouvée sur " + mapType.Name);
+                    // Lister les méthodes disponibles pour debug
+                    Debug.Log("[MapManager.TryGeoToWorldPosition] Méthodes disponibles:");
+                    foreach (var method in mapType.GetMethods())
+                    {
+                        if (method.Name.Contains("Geo") || method.Name.Contains("World") || method.Name.Contains("Position"))
+                        {
+                            Debug.Log(string.Format("  - {0}({1})", method.Name,
+                                string.Join(", ", System.Array.ConvertAll(method.GetParameters(), p => p.ParameterType.Name))));
+                        }
+                    }
+                    return false;
                 }
 
-                Debug.LogWarning("[MapManager] Méthode GeoToWorldPosition non trouvée");
+                Debug.Log("[MapManager.TryGeoToWorldPosition] Méthode GeoToWorldPosition(Vector2d, bool) trouvée");
+                var resultWithBool = geoToWorldMethod.Invoke(_mapboxMap, new object[] { latLng, false });
+
+                if (resultWithBool is Vector3)
+                {
+                    worldPos = (Vector3)resultWithBool;
+                    Debug.Log(string.Format("[MapManager.TryGeoToWorldPosition] SUCCÈS: GPS({0:F6}, {1:F6}) -> world({2})",
+                        latitude, longitude, worldPos));
+                    return true;
+                }
+                else
+                {
+                    Debug.LogError(string.Format("[MapManager.TryGeoToWorldPosition] Résultat inattendu: {0}",
+                        resultWithBool != null ? resultWithBool.GetType().Name : "NULL"));
+                }
             }
             catch (Exception e)
             {
-                Debug.LogError(string.Format("[MapManager] Erreur conversion GeoToWorld: {0}", e.Message));
+                Debug.LogError(string.Format("[MapManager.TryGeoToWorldPosition] Exception: {0}\nStackTrace: {1}",
+                    e.Message, e.StackTrace));
             }
 
             return false;

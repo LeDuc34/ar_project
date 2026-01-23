@@ -39,6 +39,10 @@ namespace GeoscaleCadastre.Map
         [Tooltip("Parent des objets de surlignage")]
         private Transform _highlightParent;
 
+        [SerializeField]
+        [Tooltip("Référence au MapManager pour la conversion de coordonnées")]
+        private MapManager _mapManager;
+
         // Objets créés pour le surlignage
         private GameObject _currentFillObject;
         private GameObject _currentOutlineObject;
@@ -63,6 +67,12 @@ namespace GeoscaleCadastre.Map
             if (_outlineMaterial == null)
             {
                 _outlineMaterial = CreateDefaultOutlineMaterial();
+            }
+
+            // Vérifier que MapManager est assigné
+            if (_mapManager == null)
+            {
+                Debug.LogWarning("[ParcelHighlighter] MapManager non assigné! Le surlignage ne fonctionnera pas correctement. Assignez-le dans l'Inspector.");
             }
         }
 
@@ -162,9 +172,19 @@ namespace GeoscaleCadastre.Map
             var meshRenderer = _currentFillObject.AddComponent<MeshRenderer>();
             Debug.Log("[ParcelHighlighter.CreateFillMesh] MeshFilter et MeshRenderer ajoutés");
 
-            // Créer le mesh à partir de la géométrie
-            Debug.Log("[ParcelHighlighter.CreateFillMesh] Appel de CreatePolygonMesh...");
-            var mesh = CreatePolygonMesh(parcel.Geometry);
+            // Convertir les coordonnées GPS en positions monde
+            var worldPositions = ConvertToWorldPositions(parcel.Geometry);
+
+            // Vérifier que la conversion a réussi
+            if (worldPositions.Length == 0 || worldPositions[0] == Vector3.zero)
+            {
+                Debug.LogError("[ParcelHighlighter.CreateFillMesh] Échec de conversion des coordonnées GPS!");
+                return;
+            }
+
+            // Créer le mesh à partir des positions monde
+            Debug.Log("[ParcelHighlighter.CreateFillMesh] Appel de CreatePolygonMeshFromWorldPositions...");
+            var mesh = CreatePolygonMeshFromWorldPositions(worldPositions);
             Debug.Log(string.Format("[ParcelHighlighter.CreateFillMesh] Mesh créé - Vertices: {0}, Triangles: {1}",
                 mesh.vertexCount, mesh.triangles.Length / 3));
             meshFilter.mesh = mesh;
@@ -176,10 +196,11 @@ namespace GeoscaleCadastre.Map
             Debug.Log(string.Format("[ParcelHighlighter.CreateFillMesh] Matériau appliqué - Couleur: {0}, Shader: {1}",
                 _fillColor, mat.shader.name));
 
-            // Positionner au-dessus de la carte
-            _currentFillObject.transform.localPosition = new Vector3(0, _highlightHeight, 0);
-            Debug.Log(string.Format("[ParcelHighlighter.CreateFillMesh] Position locale: {0}", _currentFillObject.transform.localPosition));
+            // Le mesh utilise des coordonnées monde (les vertices sont déjà élevés)
+            // L'objet reste à l'origine
+            _currentFillObject.transform.position = Vector3.zero;
             Debug.Log(string.Format("[ParcelHighlighter.CreateFillMesh] Position mondiale: {0}", _currentFillObject.transform.position));
+            Debug.Log(string.Format("[ParcelHighlighter.CreateFillMesh] Mesh bounds: {0}", mesh.bounds));
             Debug.Log(string.Format("[ParcelHighlighter.CreateFillMesh] Active: {0}", _currentFillObject.activeSelf));
         }
 
@@ -192,19 +213,33 @@ namespace GeoscaleCadastre.Map
             var lineRenderer = _currentOutlineObject.AddComponent<LineRenderer>();
             Debug.Log("[ParcelHighlighter.CreateOutline] LineRenderer ajouté");
 
-            // Configurer le LineRenderer
+            // Configurer le LineRenderer - utiliser worldSpace car les positions sont en coordonnées monde
             lineRenderer.material = _outlineMaterial;
             lineRenderer.startColor = _outlineColor;
             lineRenderer.endColor = _outlineColor;
             lineRenderer.startWidth = _outlineWidth;
             lineRenderer.endWidth = _outlineWidth;
-            lineRenderer.useWorldSpace = false;
+            lineRenderer.useWorldSpace = true; // Utiliser les coordonnées monde de Mapbox
             lineRenderer.loop = true;
             Debug.Log(string.Format("[ParcelHighlighter.CreateOutline] LineRenderer configuré - Couleur: {0}, Width: {1}",
                 _outlineColor, _outlineWidth));
 
-            // Définir les points du contour
+            // Définir les points du contour en coordonnées monde
             var points = ConvertToWorldPositions(parcel.Geometry);
+
+            // Vérifier que la conversion a réussi
+            if (points.Length == 0 || points[0] == Vector3.zero)
+            {
+                Debug.LogError("[ParcelHighlighter.CreateOutline] Échec de conversion des coordonnées GPS!");
+                return;
+            }
+
+            // Élever les points légèrement au-dessus de la carte
+            for (int i = 0; i < points.Length; i++)
+            {
+                points[i].y += _highlightHeight + 0.001f;
+            }
+
             lineRenderer.positionCount = points.Length;
             lineRenderer.SetPositions(points);
             Debug.Log(string.Format("[ParcelHighlighter.CreateOutline] Points du contour: {0}", points.Length));
@@ -214,24 +249,19 @@ namespace GeoscaleCadastre.Map
                     points[0], points[points.Length - 1]));
             }
 
-            // Positionner au-dessus de la carte
-            _currentOutlineObject.transform.localPosition = new Vector3(0, _highlightHeight + 0.001f, 0);
-            Debug.Log(string.Format("[ParcelHighlighter.CreateOutline] Position locale: {0}", _currentOutlineObject.transform.localPosition));
-            Debug.Log(string.Format("[ParcelHighlighter.CreateOutline] Position mondiale: {0}", _currentOutlineObject.transform.position));
             Debug.Log(string.Format("[ParcelHighlighter.CreateOutline] Active: {0}", _currentOutlineObject.activeSelf));
         }
 
-        private Mesh CreatePolygonMesh(Vector2[] geometry)
+        private Mesh CreatePolygonMeshFromWorldPositions(Vector3[] worldPositions)
         {
             var mesh = new Mesh();
 
-            // Convertir les coordonnées 2D en positions 3D
-            var vertices = new Vector3[geometry.Length];
-            for (int i = 0; i < geometry.Length; i++)
+            // Élever les vertices légèrement au-dessus de la carte
+            var vertices = new Vector3[worldPositions.Length];
+            for (int i = 0; i < worldPositions.Length; i++)
             {
-                // Note: Les coordonnées GPS doivent être converties en coordonnées locales
-                // Cette conversion dépend du système de coordonnées de Mapbox
-                vertices[i] = ConvertGpsToLocal(geometry[i]);
+                vertices[i] = worldPositions[i];
+                vertices[i].y += _highlightHeight;
             }
 
             // Triangulation simple (fan triangulation - fonctionne pour les polygones convexes)
@@ -249,6 +279,9 @@ namespace GeoscaleCadastre.Map
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
 
+            Debug.Log(string.Format("[ParcelHighlighter.CreatePolygonMesh] Bounds: center={0}, size={1}",
+                mesh.bounds.center, mesh.bounds.size));
+
             return mesh;
         }
 
@@ -257,42 +290,39 @@ namespace GeoscaleCadastre.Map
             var positions = new Vector3[geometry.Length];
             for (int i = 0; i < geometry.Length; i++)
             {
-                positions[i] = ConvertGpsToLocal(geometry[i]);
+                positions[i] = ConvertGpsToWorld(geometry[i]);
             }
             return positions;
         }
 
-        private Vector3 ConvertGpsToLocal(Vector2 gpsCoord)
+        private Vector3 ConvertGpsToWorld(Vector2 gpsCoord)
         {
-            // Conversion basique GPS -> coordonnées locales
-            // Cette conversion devrait être faite via le système Mapbox pour être précise
-            // Ici on utilise une approximation simple centrée sur le centroïde
-
-            if (_currentParcel != null)
+            // Utiliser MapManager pour une conversion précise via Mapbox SDK
+            if (_mapManager == null)
             {
-                // Coordonnées relatives au centroïde
-                float offsetLng = gpsCoord.x - _currentParcel.Centroid.x;
-                float offsetLat = gpsCoord.y - _currentParcel.Centroid.y;
-
-                // Conversion approximative en mètres (à ajuster selon l'échelle de la carte)
-                // 1 degré lat ≈ 111km, 1 degré lng ≈ 75km (à ~46° latitude France)
-                float x = offsetLng * 75000f * 0.00001f; // Mise à l'échelle pour Unity
-                float z = offsetLat * 111000f * 0.00001f;
-
-                Vector3 result = new Vector3(x, 0, z);
-
-                // Log seulement pour le premier point pour éviter trop de logs
-                if (gpsCoord == _currentParcel.Geometry[0])
-                {
-                    Debug.Log(string.Format("[ParcelHighlighter.ConvertGpsToLocal] GPS: {0} -> Local: {1} (offset lng={2:F6}, lat={3:F6})",
-                        gpsCoord, result, offsetLng, offsetLat));
-                }
-
-                return result;
+                Debug.LogError("[ParcelHighlighter.ConvertGpsToWorld] MapManager non assigné dans l'Inspector!");
+                return Vector3.zero;
             }
 
-            Debug.LogWarning("[ParcelHighlighter.ConvertGpsToLocal] _currentParcel est NULL - conversion par défaut");
-            return new Vector3(gpsCoord.x, 0, gpsCoord.y);
+            Vector3 worldPos;
+            // gpsCoord.x = longitude, gpsCoord.y = latitude
+            double lat = gpsCoord.y;
+            double lng = gpsCoord.x;
+
+            Debug.Log(string.Format("[ParcelHighlighter.ConvertGpsToWorld] Tentative conversion GPS: lat={0:F6}, lng={1:F6}", lat, lng));
+
+            if (_mapManager.TryGeoToWorldPosition(lat, lng, out worldPos))
+            {
+                Debug.Log(string.Format("[ParcelHighlighter.ConvertGpsToWorld] SUCCÈS: GPS ({0:F6}, {1:F6}) -> World {2}",
+                    lat, lng, worldPos));
+                return worldPos;
+            }
+            else
+            {
+                Debug.LogError(string.Format("[ParcelHighlighter.ConvertGpsToWorld] ÉCHEC conversion via MapManager pour GPS ({0:F6}, {1:F6})",
+                    lat, lng));
+                return Vector3.zero;
+            }
         }
 
         private Material CreateDefaultFillMaterial()
